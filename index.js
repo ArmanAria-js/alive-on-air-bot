@@ -174,9 +174,7 @@ bot.onText(/\/check/, async (msg) => {
         for (const symbol of WATCH_LIST) {
             for (const [key, timeframe] of Object.entries(TIMEFRAMES)) {
                 try {
-                    console.log(`Analyzing ${symbol} for ${timeframe.label}...`);
                     results[symbol][key] = await analyzePricePosition(symbol, timeframe);
-
                     await bot.editMessageText(formatMessage(results), { chat_id: chatId, message_id: sentMessage.message_id });
                 } catch (error) {
                     console.error(`Error processing ${symbol} ${timeframe.label}:`, error);
