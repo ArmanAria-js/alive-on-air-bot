@@ -138,33 +138,32 @@ bot.onText(/\/check/, async (msg) => {
     try {
         console.log("Starting /check command...");
         let results = {};
+        // Update the placeholder format too
         WATCH_LIST.forEach((symbol) => {
             results[symbol] = {};
             Object.keys(TIMEFRAMES).forEach((tf) => {
-                results[symbol][tf] = {
-                    position: "Analyzing...",
-                    price: "...",
-                    ema: "...",
-                    kijun: "...",
-                };
+                results[symbol][tf] = { position: "⏳ Analyzing...", price: "---", ema: "---", kijun: "---" };
             });
         });
 
         const formatMessage = (results) => {
             return (
-                "🔍 Analyzing Technical Indicators:\n\n" +
+                "🎯 Technical Analysis Report\n" +
+                "━━━━━━━━━━━━━━━━━━━━━\n\n" +
                 Object.entries(results)
                     .map(([sym, timeframes]) => {
                         const timeframeText = Object.entries(timeframes)
                             .map(
                                 ([tf, result]) =>
-                                    `    ${TIMEFRAMES[tf].label}: ${result.position}\n` +
-                                    `      Price: ${result.price}\n` +
-                                    `      EMA: ${result.ema}\n` +
-                                    `      Kijun: ${result.kijun}`
+                                    `  ${TIMEFRAMES[tf].label}\n` +
+                                    `  ${result.position}\n` +
+                                    `  • Current: $${result.price}\n` +
+                                    `  • EMA(155): $${result.ema}\n` +
+                                    `  • Kijun(55): $${result.kijun}\n` +
+                                    `  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈`
                             )
-                            .join("\n\n");
-                        return `${sym}:\n${timeframeText}`;
+                            .join("\n");
+                        return `🔸 ${sym}\n${timeframeText}`;
                     })
                     .join("\n\n")
             );
@@ -178,22 +177,11 @@ bot.onText(/\/check/, async (msg) => {
                     console.log(`Analyzing ${symbol} for ${timeframe.label}...`);
                     results[symbol][key] = await analyzePricePosition(symbol, timeframe);
 
-                    await bot.editMessageText(formatMessage(results), {
-                        chat_id: chatId,
-                        message_id: sentMessage.message_id,
-                    });
+                    await bot.editMessageText(formatMessage(results), { chat_id: chatId, message_id: sentMessage.message_id });
                 } catch (error) {
                     console.error(`Error processing ${symbol} ${timeframe.label}:`, error);
-                    results[symbol][key] = {
-                        position: "❌ ERROR",
-                        price: "ERROR",
-                        ema: "ERROR",
-                        kijun: "ERROR",
-                    };
-                    await bot.editMessageText(formatMessage(results), {
-                        chat_id: chatId,
-                        message_id: sentMessage.message_id,
-                    });
+                    results[symbol][key] = { position: "❌ ERROR", price: "---", ema: "---", kijun: "---" };
+                    await bot.editMessageText(formatMessage(results), { chat_id: chatId, message_id: sentMessage.message_id });
                 }
             }
         }
