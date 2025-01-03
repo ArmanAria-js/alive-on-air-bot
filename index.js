@@ -1,4 +1,5 @@
 //! Required
+require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const { EMA, IchimokuCloud } = require("technicalindicators");
@@ -65,7 +66,6 @@ const CRYPTO_WATCH_LIST = [
     "LTCUSDT",
     "NEARUSDT",
     "AAVEUSDT",
-    "APTUSDT",
     "ICPUSDT",
     "RNDRUSDT",
     "XMRUSDT",
@@ -205,26 +205,25 @@ bot.onText(/\/cr_list/, async (msg) => {
 
 // Format group messages
 const formatGroupMessage = (results, groupNumber, totalGroups) => {
-    return (
-        `🎯 Technical Analysis Report (${groupNumber}/${totalGroups})\n` +
-        "━━━━━━━━━━━━━━━━━━━━━\n\n" +
-        Object.entries(results)
-            .map(([sym, timeframes]) => {
-                const timeframeText = Object.entries(timeframes)
-                    .map(
-                        ([tf, result]) =>
-                            `  ${TIMEFRAMES[tf].label}\n` +
-                            `  ${result.position}\n` +
-                            `  • Current: $${result.price}\n` +
-                            `  • EMA(155): $${result.ema}\n` +
-                            `  • Kijun(55): $${result.kijun}\n` +
-                            `  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈`
-                    )
-                    .join("\n");
-                return `🔸 ${sym}\n${timeframeText}`;
-            })
-            .join("\n\n")
-    );
+    return `🎯 Technical Analysis Report (${groupNumber}/${totalGroups})
+━━━━━━━━━━━━━━━━━━━━━
+
+${Object.entries(results)
+    .map(([sym, timeframes]) => {
+        const timeframeText = Object.entries(timeframes)
+            .map(
+                ([tf, result]) =>
+                    `  ${TIMEFRAMES[tf].label}
+  ${result.position}
+  • Current: $${result.price}
+  • EMA(155): $${result.ema}
+  • Kijun(55): $${result.kijun}
+  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈`
+            )
+            .join("\n");
+        return `🔸 ${sym}\n${timeframeText}`;
+    })
+    .join("\n\n")}`;
 };
 
 bot.onText(/\/cr_check/, async (msg) => {
@@ -570,12 +569,41 @@ const handleApiError = (error, chatId, api) => {
     else bot.sendMessage(chatId, `❌ An error occurred while fetching data from ${api}.`);
 };
 
-const SIGNAL_CHECK_INTERVAL = parseInt(process.env.SIGNAL_CHECK_INTERVAL);
+const SIGNAL_CHECK_INTERVAL = parseInt(process.env.SIGNAL_CHECK_INTERVAL, 10);
+const RATE_LIMIT_RESET = parseInt(process.env.RATE_LIMIT_RESET, 10);
+const TELEGRAM_RESET = parseInt(process.env.TELEGRAM_RESET, 10);
+
+// Validate the values
+console.log("Intervals loaded:", { SIGNAL_CHECK_INTERVAL, RATE_LIMIT_RESET, TELEGRAM_RESET });
+
+if (isNaN(SIGNAL_CHECK_INTERVAL) || isNaN(RATE_LIMIT_RESET) || isNaN(TELEGRAM_RESET)) {
+    throw new Error("Invalid interval values in .env file");
+}
 
 //? Interval to check for signals
+let lastCheckTime = Date.now();
+const MIN_CHECK_INTERVAL = SIGNAL_CHECK_INTERVAL * 0.9; // 90% of intended interval
+
 async function checkSignals() {
-    console.log("Checking signals...");
+    // Prevent checks that are too close together
+    const timeSinceLastCheck = Date.now() - lastCheckTime;
+    if (timeSinceLastCheck < MIN_CHECK_INTERVAL) {
+        console.log(`Skipping signal check - too soon (${timeSinceLastCheck}ms since last check)`);
+        return;
+    }
+
+    console.log(`Starting signal check at ${new Date().toISOString()}`);
     try {
+        // Add a guard to prevent concurrent executions
+        if (checkSignals.isRunning) {
+            console.log(`Signal check already in progress (running for ${Date.now() - checkSignals.startTime}ms), skipping...`);
+            return;
+        }
+
+        checkSignals.isRunning = true;
+        checkSignals.startTime = Date.now();
+        lastCheckTime = Date.now();
+
         const BATCH_SIZE = 5;
         const BATCH_DELAY = 2000;
         let signals = [];
@@ -595,11 +623,18 @@ async function checkSignals() {
                         }
 
                         const allAbove = Object.values(timeframeResults).every((result) => result.position.includes("ABOVE"));
-
                         const allBelow = Object.values(timeframeResults).every((result) => result.position.includes("BELOW"));
 
                         if (allAbove || allBelow) {
-                            signals.push({ symbol, direction: allAbove ? "ABOVE" : "BELOW", timeframes: timeframeResults });
+                            signals.push({
+                                symbol,
+                                direction: allAbove ? "ABOVE" : "BELOW",
+                                timeframes: {
+                                    d1: timeframeResults["1d"],
+                                    h4: timeframeResults["4h"],
+                                    h1: timeframeResults["1h"],
+                                },
+                            });
                         }
                     } catch (error) {
                         console.error(`Error analyzing ${symbol}:`, error);
@@ -612,13 +647,14 @@ async function checkSignals() {
 
         if (signals.length > 0) {
             const messages = formatSignalMessage(signals);
-
             for (const message of messages) {
                 try {
+                    await checkRateLimit("telegram");
                     await bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" });
                     await delay(1000);
                 } catch (error) {
-                    if (error.response && error.response.statusCode === 429) {
+                    console.error("Error sending signal message:", error);
+                    if (error.response?.statusCode === 429) {
                         await handleTelegramRateLimit(error.response.body.parameters.retry_after);
                         await bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" });
                     }
@@ -627,6 +663,11 @@ async function checkSignals() {
         }
     } catch (error) {
         console.error("Error in checkSignals:", error);
+    } finally {
+        const duration = Date.now() - checkSignals.startTime;
+        console.log(`Signal check completed in ${duration}ms at ${new Date().toISOString()}`);
+        checkSignals.isRunning = false;
+        checkSignals.startTime = null;
     }
 }
 
@@ -660,13 +701,30 @@ ${batchSignals
 let signalCheckInterval;
 
 function startSignalChecker() {
-    if (signalCheckInterval) clearInterval(signalCheckInterval);
+    if (signalCheckInterval) {
+        console.log("Signal checker already running, clearing existing interval");
+        clearInterval(signalCheckInterval);
+        signalCheckInterval = null;
+    }
 
-    checkSignals();
-    signalCheckInterval = setInterval(checkSignals, SIGNAL_CHECK_INTERVAL);
-    console.log("Signal checker started");
+    console.log(`Starting signal checker with ${SIGNAL_CHECK_INTERVAL}ms interval at ${new Date().toISOString()}`);
+
+    // Initial check after a short delay
+    setTimeout(() => {
+        checkSignals();
+
+        // Set new interval
+        signalCheckInterval = setInterval(() => {
+            if (!checkSignals.isRunning) {
+                checkSignals();
+            } else {
+                console.log("Skipping interval - previous check still running");
+            }
+        }, SIGNAL_CHECK_INTERVAL);
+    }, 5000); // 5-second initial delay
 }
 
+// Signal command handlers
 bot.onText(/\/signals_start/, async (msg) => {
     await logCommandUsage(msg, "/signals_start");
     if (msg.chat.id.toString() === ADMIN_CHAT_ID) {
@@ -694,11 +752,10 @@ bot.onText(/\/signals_status/, async (msg) => {
     }
 });
 
+// Start the signal checker on bot startup
 startSignalChecker();
 
-//! Helper Functions
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
+// Helper functions for rate limiting
 const handleTelegramRateLimit = async (retryAfter) => {
     const waitTime = (retryAfter + 1) * 1000;
     console.log(`Hitting Telegram rate limit, waiting for ${waitTime}ms`);
@@ -710,15 +767,14 @@ const logCommandUsage = async (msg, command) => {
         const user = msg.from;
         const username = user.username ? `@${user.username}` : "No username";
         const name = user.first_name ? (user.last_name ? `${user.first_name} ${user.last_name}` : user.first_name) : "No name";
-        const logMessage = `
-🤖 *Command Used*
+        const logMessage = `🤖 Command Used
 ━━━━━━━━━━━━━━━
-Command: \`${command}\`
+Command: ${command}
 User: ${username}
 Name: ${name}
-ID: \`${user.id}\`
-Time: ${new Date().toISOString()}
-        `;
+ID: ${user.id}
+Time: ${new Date().toISOString()}`;
+
         await bot.sendMessage(ADMIN_CHAT_ID, logMessage);
     } catch (error) {
         console.error("Error logging command:", error);
@@ -733,3 +789,15 @@ const isForexMarketOpen = () => {
     if (day === 0 || (day === 6 && hour > 21) || (day === 5 && hour > 21)) return false;
     return true;
 };
+
+// Add cleanup for the interval when the process exits
+process.on("SIGINT", () => {
+    console.log("Cleaning up signal checker...");
+    if (signalCheckInterval) {
+        clearInterval(signalCheckInterval);
+    }
+    process.exit();
+});
+
+// Add this with your other helper functions
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

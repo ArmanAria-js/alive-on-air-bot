@@ -12,6 +12,7 @@
     "dependencies": {
         "@polygon.io/client-js": "^7.3.2",
         "axios": "^1.7.9",
+        "dotenv": "^16.4.7",
         "node-telegram-bot-api": "^0.66.0",
         "technicalindicators": "^3.1.0",
         "yahoo-finance2": "^2.13.3"
