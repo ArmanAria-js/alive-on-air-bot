@@ -562,12 +562,50 @@ bot.onText(/\/fx_check/, async (msg) => {
     }
 });
 
-const handleApiError = (error, chatId, api) => {
-    console.error(`${api} API Error:`, error);
+const logError = async (error, context = "") => {
+    try {
+        const timestamp = new Date().toISOString();
+        const errorMessage = `
+🚨 *Bot Error Report*
+━━━━━━━━━━━━━━━━━━━━━
+⏰ *Time:* ${timestamp}
+📍 *Context:* ${context}
+❌ *Error:* ${error.message}
+🔍 *Stack:* ${error.stack || "No stack trace"}
+        `;
 
-    if (error.response?.status === 429 || error.response?.status === 418) bot.sendMessage(chatId, `⚠️ Rate limit reached for ${api}. Please try again later.`);
-    else bot.sendMessage(chatId, `❌ An error occurred while fetching data from ${api}.`);
+        await bot.sendMessage(ADMIN_CHAT_ID, errorMessage, { parse_mode: "Markdown" });
+    } catch (loggingError) {
+        console.error("Error logging failed:", loggingError);
+        console.error("Original error:", error);
+    }
 };
+
+const handleApiError = async (error, chatId, api) => {
+    await logError(error, `${api} API Error`);
+
+    if (error.response?.status === 429 || error.response?.status === 418) {
+        await bot.sendMessage(chatId, `⚠️ Rate limit reached for ${api}. Please try again later.`);
+    } else {
+        await bot.sendMessage(chatId, `❌ An error occurred while fetching data from ${api}.`);
+    }
+};
+
+bot.on("polling_error", async (error) => {
+    await logError(error, "Polling Error");
+});
+
+bot.on("error", async (error) => {
+    await logError(error, "Bot Error");
+});
+
+process.on("uncaughtException", async (error) => {
+    await logError(error, "Uncaught Exception");
+});
+
+process.on("unhandledRejection", async (error) => {
+    await logError(error, "Unhandled Rejection");
+});
 
 const SIGNAL_CHECK_INTERVAL = parseInt(process.env.SIGNAL_CHECK_INTERVAL, 10);
 const RATE_LIMIT_RESET = parseInt(process.env.RATE_LIMIT_RESET, 10);
