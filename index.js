@@ -463,11 +463,28 @@ Try /help for more details!
     });
 });
 
+// Add this helper function near your other utility functions
+const retryPolygonRequest = async (fn, maxRetries = 3, delay = 2000) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (error) {
+            if (attempt === maxRetries || !["ECONNRESET", "ETIMEDOUT"].includes(error.code)) {
+                throw error;
+            }
+            console.log(`Polygon API request failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+    }
+};
+
 bot.onText(/\/fx_check/, async (msg) => {
     await logCommandUsage(msg, "/fx_check");
     const chatId = msg.chat.id;
 
-    if (!isForexMarketOpen()) await bot.sendMessage(chatId, "⚠️ Note: Forex market is currently closed.");
+    if (!isForexMarketOpen()) {
+        await bot.sendMessage(chatId, "⚠️ Note: Forex market is currently closed.");
+    }
 
     try {
         console.log("Starting /fx_check command...");
@@ -518,7 +535,12 @@ bot.onText(/\/fx_check/, async (msg) => {
                         try {
                             await checkRateLimit("polygon");
                             const formattedSymbol = formatForexSymbol(symbol);
-                            const bars = await rest.forex.aggregates(formattedSymbol, timeframe.interval, timeframe.limit);
+
+                            // Wrap the Polygon API call with retry logic
+                            const bars = await retryPolygonRequest(async () => {
+                                return await rest.forex.aggregates(formattedSymbol, timeframe.interval, timeframe.limit);
+                            });
+
                             const groupIndex = Math.floor(FOREX_WATCH_LIST.indexOf(symbol) / SYMBOLS_PER_MESSAGE);
                             const groupSymbols = messageGroups[groupIndex];
                             const groupResults = {};
@@ -531,24 +553,36 @@ bot.onText(/\/fx_check/, async (msg) => {
                                     chat_id: chatId,
                                     message_id: sentMessages[groupIndex].message_id,
                                 });
-                                await delay(500);
-                            } catch (error) {
-                                if (error.response && error.response.statusCode === 429) {
-                                    await handleTelegramRateLimit(error.response.body.parameters.retry_after);
-                                    await bot.editMessageText(formatGroupMessage(groupResults, parseInt(groupIndex) + 1, Object.keys(messageGroups).length), {
-                                        chat_id: chatId,
-                                        message_id: sentMessages[groupIndex].message_id,
-                                    });
-                                }
+                            } catch (msgError) {
+                                console.error("Error updating message:", msgError);
                             }
                         } catch (error) {
                             console.error(`Error analyzing ${symbol} ${timeframe.label}:`, error);
+                            await logError(error, `Forex Analysis - ${symbol} ${timeframe.label}`);
+
                             results[symbol][key] = {
                                 position: "❌ ERROR",
                                 price: "---",
                                 ema: "---",
                                 kijun: "---",
                             };
+
+                            // Update the message to show the error
+                            const groupIndex = Math.floor(FOREX_WATCH_LIST.indexOf(symbol) / SYMBOLS_PER_MESSAGE);
+                            const groupSymbols = messageGroups[groupIndex];
+                            const groupResults = {};
+                            groupSymbols.forEach((sym) => {
+                                groupResults[sym] = results[sym];
+                            });
+
+                            try {
+                                await bot.editMessageText(formatGroupMessage(groupResults, parseInt(groupIndex) + 1, Object.keys(messageGroups).length), {
+                                    chat_id: chatId,
+                                    message_id: sentMessages[groupIndex].message_id,
+                                });
+                            } catch (msgError) {
+                                console.error("Error updating message:", msgError);
+                            }
                         }
                     }
                 })
@@ -558,7 +592,8 @@ bot.onText(/\/fx_check/, async (msg) => {
         }
     } catch (error) {
         console.error("Error in /fx_check command:", error);
-        bot.sendMessage(chatId, "❌ An error occurred while analyzing indicators.");
+        await logError(error, "FX Check Command");
+        await bot.sendMessage(chatId, "❌ An error occurred while analyzing indicators.");
     }
 });
 
